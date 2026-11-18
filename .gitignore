@@ -1,0 +1,12 @@
+.DS_Store
+Thumbs.db
+Desktop.ini
+__MACOSX/
+__pycache__/
+*.py[cod]
+.venv/
+.runtime/
+.gemini/
+.env
+.env.*
+*.log

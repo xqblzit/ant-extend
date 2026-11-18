@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ant-extend</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <main>
+    <div id="view-tabs" class="view-tabs" role="tablist" aria-label="ant-extend 视图">
+      <button id="session-tab" type="button" role="tab" aria-selected="true" aria-controls="session-view">会话</button>
+      <button id="settings-tab" type="button" role="tab" aria-selected="false" aria-controls="preferences" tabindex="-1" disabled>设置</button>
+    </div>
+
+    <section id="session-view" role="tabpanel" aria-labelledby="session-tab">
+      <section id="overview" aria-labelledby="overview-title" data-tone="idle">
+        <header class="overview-head">
+          <h1 id="overview-title">自动恢复</h1>
+          <button id="session-pause" class="quiet-button" type="button" hidden>暂停本会话</button>
+        </header>
+        <div class="session-meta">
+          <span class="session-status" role="status" id="status">正在连接</span>
+          <span id="model" hidden></span>
+        </div>
+        <div class="retry-summary">
+          <div class="retry-count">
+            <span>本轮重试</span>
+            <strong><span id="attempts">—</span><span id="limit"></span></strong>
+          </div>
+          <p class="caption" id="detail">正在读取当前会话。</p>
+        </div>
+        <p id="carbon-hint" class="hint" hidden>Carbon 多次等待无进展。可在会话底部切换到 Hydrogen 后继续。</p>
+      </section>
+
+      <div class="disclosures">
+        <details id="history" hidden>
+          <summary><span>恢复记录</span><span id="history-count" class="summary-note"></span></summary>
+          <ol id="history-content" class="history-content"></ol>
+        </details>
+
+        <details id="process" hidden>
+          <summary>思考与执行</summary>
+          <div id="process-content" class="process-content"></div>
+        </details>
+      </div>
+    </section>
+
+    <section id="preferences" role="tabpanel" aria-labelledby="settings-tab" hidden>
+      <form id="settings-form">
+        <div class="config-group">
+          <h2>自动恢复</h2>
+          <div class="config-row">
+            <span id="global-status">全部会话自动恢复</span>
+            <button id="global-pause" class="quiet-button" type="button" disabled>暂停全部</button>
+          </div>
+          <label class="config-row">
+            <span>提前恢复</span>
+            <span class="switch">
+              <input id="early-recovery" type="checkbox" role="switch">
+              <span class="switch-track" aria-hidden="true"></span>
+            </span>
+          </label>
+        </div>
+
+        <div class="config-group">
+          <h2>重试策略</h2>
+          <label class="config-row">
+            <span>无进展检测</span>
+            <select id="preset">
+              <option value="default">默认 · 120 秒</option>
+              <option value="fast">灵敏 · 15 秒起</option>
+              <option value="balanced">均衡 · 30 秒起</option>
+              <option value="patient">稳健 · 60 秒起</option>
+              <option value="custom">自定义</option>
+            </select>
+          </label>
+          <div id="custom-detection" hidden>
+            <label class="config-row schedule-row">
+              <span>检测间隔（秒）</span>
+              <input id="idle-timeouts" type="text" placeholder="例如 20, 35, 50"
+                     aria-describedby="detection-note" required disabled>
+            </label>
+            <p id="detection-note" class="field-note">填一个值就固定使用，多个值用逗号隔开并递增。</p>
+          </div>
+          <label class="config-row">
+            <span>每轮最多重试</span>
+            <input id="max-retries" type="number" step="1" min="0" max="20" required>
+          </label>
+          <label class="config-row schedule-row">
+            <span>递增等待（秒）</span>
+            <input id="delays" type="text" inputmode="decimal" placeholder="10, 20, 30, 60" required>
+          </label>
+        </div>
+
+        <div class="config-group">
+          <h2>侧栏显示</h2>
+          <label class="config-row">
+            <span>思考与执行</span>
+            <span class="switch">
+              <input id="progress-view" type="checkbox" role="switch">
+              <span class="switch-track" aria-hidden="true"></span>
+            </span>
+          </label>
+        </div>
+        <div id="settings-actions" class="settings-actions" hidden>
+          <button id="save" type="submit" disabled>保存设置</button>
+        </div>
+      </form>
+    </section>
+
+    <p id="notice" class="notice" role="status" hidden></p>
+  </main>
+</body>
+</html>

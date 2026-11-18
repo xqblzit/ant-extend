@@ -1,0 +1,13 @@
+{
+  "enabled": true,
+  "maxRetries": 8,
+  "maxWindowSeconds": 1800,
+  "retryDelaysSeconds": [10, 20, 30, 60],
+  "maxRetryAfterSeconds": 30,
+  "earlyRecovery": true,
+  "idleTimeoutsSeconds": [120],
+  "pollIntervalSeconds": 2,
+  "nativeApiTimeoutSeconds": 5,
+  "panelEnabled": true,
+  "progressView": true
+}

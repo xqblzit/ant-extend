@@ -1,0 +1,17 @@
+{
+  "ant-extend": {
+    "PreInvocation": [
+      {"type": "command", "command": "./scripts/run.sh --arm", "timeout": 5}
+    ],
+    "PostInvocation": [
+      {"type": "command", "command": "./scripts/run.sh --disarm", "timeout": 5}
+    ],
+    "Stop": [
+      {
+        "type": "command",
+        "command": "./scripts/run.sh",
+        "timeout": 75
+      }
+    ]
+  }
+}
