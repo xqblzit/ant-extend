@@ -59,7 +59,7 @@ function showNotice(text, ok = false) {
 }
 
 function modelLabel(model) {
-  const match = /^gemini-4-(carbon|hydrogen|argon)(?:-tiered)?-([a-z]+)$/.exec(model || '');
+  const match = /^gemini-4-([a-z][a-z0-9]*)(?:-tiered)?-([a-z]+)$/.exec(model || '');
   if (!match) return model || '';
   const [family, effort] = match.slice(1).map((part) => part[0].toUpperCase() + part.slice(1));
   return 'Gemini 4 ' + family + ' ' + effort;
@@ -133,9 +133,11 @@ function showState() {
   } else if (phase === 'cooldown') {
     description = '服务要求更长等待，本轮已停止短间隔重试。';
   } else if (phase === 'unavailable') {
-    description = row.nativeFailure === 'unsupported_version'
-      ? '当前版本尚未适配 Antigravity ' + row.nativeVersion + '。'
-      : '与 Antigravity 的监测连接暂时断开。';
+    const failures = {
+      state_protocol: '暂时无法从宿主读取当前会话的状态。',
+      recovery_protocol: '续跑接口校验未通过，提前恢复已暂停。',
+    };
+    description = failures[row.nativeFailure] || '与 Antigravity 的监测连接暂时断开。';
   } else if (phase === 'watching' && row.idleSeconds >= 5) {
     description = '已 ' + Math.floor(row.idleSeconds) + ' 秒没有新进展。';
   }

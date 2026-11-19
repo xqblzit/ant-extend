@@ -31,7 +31,7 @@ def state(kind="CORTEX_STEP_TYPE_PLANNER_RESPONSE", status="CORTEX_STEP_STATUS_R
 
 
 class FakeClient:
-    version = "2.32.2"
+    version = "2.33.0"
 
     def __init__(self, snapshot):
         self.before = copy.deepcopy(snapshot)
@@ -167,6 +167,22 @@ class EarlyRecovery(unittest.TestCase):
         self.assertEqual(row["attempts"], 1)
         self.assertGreater(row["firstRecoveryAt"] - row["startedAt"], self.settings["maxWindowSeconds"])
 
+    def test_incompatible_executor_history_does_not_cancel_or_spend_a_retry(self):
+        error = native.NativeProtocolError("recovery_protocol", "Invalid executor history")
+        with patch.object(self.client, "executor_count", side_effect=error), self.assertRaises(type(error)):
+            self.recover()
+        self.assertFalse(self.client.cancelled)
+        self.assertFalse(native.read_control(self.path).get("recovering"))
+        self.assertFalse(native.session_store.read(self.data, self.conversation).get("attempts"))
+
+    def test_failed_continuation_configuration_clears_the_recovery_marker(self):
+        error = native.NativeProtocolError("recovery_protocol", "Missing frozen configuration")
+        with patch.object(self.client, "frozen_config", side_effect=error), self.assertRaises(type(error)):
+            self.recover()
+        self.assertTrue(self.client.cancelled)
+        self.assertFalse(self.client.continued)
+        self.assertFalse(native.read_control(self.path).get("recovering"))
+
     def test_native_api_request_never_contains_chat_text(self):
         client = object.__new__(native.NativeClient)
         calls = []
@@ -187,27 +203,63 @@ class EarlyRecovery(unittest.TestCase):
         with self.assertRaises(ValueError):
             native.read_exact(Fragmented(b"a"), 5)
 
-    def test_supported_app_versions_and_unknown_version_diagnostic(self):
+    def test_version_is_diagnostic_and_future_hosts_can_read_live_state(self):
         discovery = {"pid": os.getpid(), "httpPort": 32000, "csrfToken": secrets.token_urlsafe(24)}
-        for version in ("2.32.1", "2.32.2"):
+        for version in ("2.32.1", "2.33.0", "99.0.0", None):
             with self.subTest(version=version):
-                self.assertEqual(native.NativeClient(dict(discovery, lsVersion=version)).version, version)
-        with self.assertRaises(native.UnsupportedHostVersion) as error:
-            native.NativeClient(dict(discovery, lsVersion="2.32.3"))
-        self.assertEqual(error.exception.version, "2.32.3")
+                client = native.NativeClient(dict(discovery, lsVersion=version))
+                self.assertEqual(client.version, version)
+                update = dict(state(), extraFutureField=True)
+                with patch.object(client, "request", side_effect=[{"numSteps": 21}, {"update": update}]):
+                    self.assertEqual(client.snapshot(self.conversation)["status"], native.RUNNING)
 
-    def test_invalid_ports_fail_on_supported_versions(self):
+    def test_native_state_rejects_missing_status_or_mismatched_step_arrays(self):
+        client = object.__new__(native.NativeClient)
+        for update in (dict(state(), status=None), dict(state(), conversationId="another-conversation"),
+                       dict(state(), mainTrajectoryUpdate={}),
+                       dict(state(), mainTrajectoryUpdate={"stepsUpdate": {"indices": [20], "steps": []}})):
+            with self.subTest(update=update):
+                with patch.object(client, "request", side_effect=[{"numSteps": 21}, {"update": update}]):
+                    with self.assertRaises(native.NativeProtocolError) as error:
+                        client.snapshot(self.conversation)
+                self.assertEqual(error.exception.reason, "state_protocol")
+
+    def test_state_stream_remains_available_when_pagination_metadata_changes(self):
+        client = object.__new__(native.NativeClient)
+        error = native.NativeProtocolError("state_protocol", "Metadata endpoint unavailable")
+        with patch.object(client, "request", side_effect=[error, {"update": state()}]) as request:
+            self.assertEqual(client.snapshot(self.conversation)["status"], native.RUNNING)
+        self.assertEqual(request.call_args.args[1]["initialStepsPageBounds"], {"startIndex": 0})
+
+    def test_invalid_ports_fail_regardless_of_version(self):
         for port in (True, 0, 70000):
             with self.subTest(port=port), self.assertRaisesRegex(ValueError, "Invalid loopback port"):
                 native.NativeClient({"pid": os.getpid(), "lsVersion": "2.32.2", "httpPort": port})
 
-    def test_watch_reports_incompatible_host_without_retrying(self):
-        with patch.object(native, "discover", side_effect=native.UnsupportedHostVersion("2.32.3")):
+    def test_watch_reconnects_after_a_temporary_read_error(self):
+        self.client.pid = os.getpid()
+        idle = dict(self.snapshot, status=native.IDLE)
+        snapshots = [OSError("temporary reconnect"), idle, idle, idle]
+        with patch.object(native, "discover", return_value=self.client) as discovery, \
+             patch.object(self.client, "snapshot", side_effect=snapshots), \
+             patch.object(native.time, "sleep"):
             native.watch(self.conversation, self.data)
+        self.assertEqual(discovery.call_count, 2)
+        row = native.session_store.read(self.data, self.conversation)
+        self.assertEqual(row["phase"], "idle")
+        self.assertIsNone(row["nativeFailure"])
+
+    def test_watch_reports_unusable_state_interface_after_reconnecting(self):
+        self.client.pid = os.getpid()
+        error = native.NativeProtocolError("state_protocol", "Incomplete state stream")
+        with patch.object(native, "discover", return_value=self.client) as discovery, \
+             patch.object(self.client, "snapshot", side_effect=error), patch.object(native.time, "sleep"):
+            native.watch(self.conversation, self.data)
+        self.assertEqual(discovery.call_count, 3)
         row = native.session_store.read(self.data, self.conversation)
         self.assertEqual(row["phase"], "unavailable")
-        self.assertEqual(row["nativeFailure"], "unsupported_version")
-        self.assertEqual(row["nativeVersion"], "2.32.3")
+        self.assertEqual(row["nativeFailure"], "state_protocol")
+        self.assertEqual(row["nativeVersion"], "2.33.0")
         self.assertNotIn("attempts", row)
 
     def test_http_redirects_are_rejected_before_following(self):
@@ -284,6 +336,15 @@ class EarlyRecovery(unittest.TestCase):
             config = client.frozen_config(self.conversation, 7)
         self.assertEqual(config, self.client.config)
         self.assertTrue(all(body["executorMetadataOffset"] == 7 for _, body in calls))
+
+    def test_cancellation_config_requires_a_model_selector_before_continuing(self):
+        client = object.__new__(native.NativeClient)
+        receipt = {"terminationReason": "EXECUTOR_TERMINATION_REASON_USER_CANCELED",
+                   "cascadeConfig": {"plannerConfig": {"toolConfig": {}}, "executorConfig": {}}}
+        with patch.object(client, "request", return_value={"executorMetadata": [receipt]}):
+            with self.assertRaises(native.NativeProtocolError) as error:
+                client.frozen_config(self.conversation, 7)
+        self.assertEqual(error.exception.reason, "recovery_protocol")
 
 
 if __name__ == "__main__":

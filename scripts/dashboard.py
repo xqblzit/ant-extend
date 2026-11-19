@@ -85,6 +85,9 @@ class Application:
             row["monitorActive"] = bool(control.get("armed") and now - row.get("lastCheckAt", 0) < 15)
             if row.get("phase") in ("watching", "tool_running") and not row["monitorActive"]:
                 row["phase"] = "idle"
+            if (row.get("phase") == "unavailable" and row.get("nativeFailure") == "unsupported_version"
+                    and not control.get("armed")):
+                row.update(phase="idle", nativeFailure=None)
         return {
             "version": retry.package_version(),
             "now": now,
@@ -117,7 +120,7 @@ class Application:
                     "items": current["items"] if current else [],
                     "partial": grouped["partial"],
                 }
-            except (OSError, ValueError, TypeError, KeyError):
+            except (OSError, ValueError, TypeError, KeyError, AttributeError):
                 value = {"available": False, "items": []}
             self.cache = {k: v for k, v in self.cache.items() if time.monotonic()-v[0] < 60}
             self.cache[conversation] = (time.monotonic(), value)
@@ -125,16 +128,22 @@ class Application:
 
     def resume_monitors(self, conversation=None):
         # Re-arm monitoring only. Never submit a message or restart a stopped task.
+        if not native.enabled(retry.load_settings(), self.data):
+            return
         paths = list((self.data / "watch").glob("*.json"))
         for path in paths:
             try:
                 control = native.read_control(path)
+                if not isinstance(control, dict):
+                    continue
+                cid = control.get("conversationId")
+                if (isinstance(cid, str) and cid and control.get("armed") and not control.get("recovering")
+                        and (conversation is None or cid == conversation)
+                        and not session_store.is_paused(self.data, cid)):
+                    spawn_background([sys.executable, "-B", str(retry.ROOT / "scripts/retry.py"), "--watch", cid],
+                                     env=dict(os.environ, PLUGIN_DATA=str(self.data)))
             except (OSError, ValueError, TypeError):
                 continue
-            cid = control.get("conversationId")
-            if cid and control.get("armed") and (conversation is None or cid == conversation):
-                spawn_background([sys.executable, "-B", str(retry.ROOT / "scripts/retry.py"), "--watch", cid],
-                                 env=dict(os.environ, PLUGIN_DATA=str(self.data)))
 
     def action(self, payload):
         action = payload.get("action")
@@ -261,5 +270,6 @@ def serve(data):
     with ThreadingHTTPServer(("127.0.0.1", port), Handler) as server:
         server.daemon_threads = True
         server.app = Application(data, token)
+        server.app.resume_monitors()
         print("ant-extend pane ready", flush=True)
         server.serve_forever()
