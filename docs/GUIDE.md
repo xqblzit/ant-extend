@@ -38,7 +38,7 @@
 
 终端仍支持 `--status`、`--check-config`、`--pause`、`--resume`。
 
-已适配 Antigravity App **2.32.1、2.32.2**。未知版本的提前恢复和过程查看会暂停，Stop Hook 继续处理临时错误。侧栏要求宿主支持 UI Sidecar。
+侧栏要求宿主支持 UI Sidecar。扩展会检查本地会话接口，校验通过后即可使用监测和过程查看。读状态短暂失败时会重新连接。续跑所需接口无法校验时暂停提前恢复，Stop Hook 仍可处理请求结束时的临时错误。
 
 侧栏使用 Antigravity 分配的回环端口和宿主令牌，状态位于 `~/.gemini/antigravity/plugin_data/ant-extend`。过程内容按需读取。停用或卸载使用应用插件开关或 `agy plugin disable ant-extend` / `agy plugin uninstall ant-extend`。
 

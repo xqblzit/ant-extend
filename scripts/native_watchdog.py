@@ -1,7 +1,6 @@
 """Early recovery via the local Antigravity App API; never submits chat text.
 
-Protocol cross-checked against App 2.32.1, 2.32.2 and the MIT-licensed
-Antigravity-Mobility-CLI client. This implementation has no UI automation.
+The local response contract determines which operations are available.
 """
 
 from __future__ import annotations
@@ -12,9 +11,9 @@ import json
 import os
 from pathlib import Path
 import struct
-import subprocess
 import sys
 import time
+from urllib.error import HTTPError
 import urllib.request
 
 import retry
@@ -23,9 +22,11 @@ from platform_utils import lock_fd, process_alive, spawn_background
 
 
 SERVICE = "/exa.language_server_pb.LanguageServerService/"
-SUPPORTED_VERSIONS = frozenset({"2.32.1", "2.32.2"})
 MAX_RESPONSE = 16 * 1024 * 1024
 RUNNING = "CASCADE_RUN_STATUS_RUNNING"
+IDLE = "CASCADE_RUN_STATUS_IDLE"
+MONITOR_METHODS = {"GetConversationMetadata", "StreamAgentStateUpdates"}
+READ_ERRORS = (OSError, ValueError, KeyError, TypeError, struct.error)
 ACTIVE_STEP = {"CORTEX_STEP_STATUS_PENDING", "CORTEX_STEP_STATUS_RUNNING",
                "CORTEX_STEP_STATUS_GENERATING", "CORTEX_STEP_STATUS_WAITING"}
 TERMINAL_STEP = {"CORTEX_STEP_STATUS_DONE", "CORTEX_STEP_STATUS_ERROR",
@@ -38,10 +39,10 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-class UnsupportedHostVersion(ValueError):
-    def __init__(self, version: str):
-        super().__init__("Unsupported native API version")
-        self.version = version
+class NativeProtocolError(ValueError):
+    def __init__(self, reason: str, message: str):
+        super().__init__(message)
+        self.reason = reason
 
 
 class NativeClient:
@@ -49,11 +50,8 @@ class NativeClient:
         self.pid = discovery.get("pid")
         if not process_alive(self.pid):
             raise ValueError("Native process is no longer running")
-        self.version = discovery.get("lsVersion")
-        if not isinstance(self.version, str) or not self.version:
-            raise ValueError("Missing native API version")
-        if self.version not in SUPPORTED_VERSIONS:
-            raise UnsupportedHostVersion(self.version[:32])
+        version = discovery.get("lsVersion")
+        self.version = version[:32] if isinstance(version, str) and version else None
         port = discovery.get("httpPort")
         if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
             raise ValueError("Invalid loopback port")
@@ -73,24 +71,45 @@ class NativeClient:
             headers.update({"Content-Type": "application/connect+json",
                             "Connect-Protocol-Version": "1"})
         request = urllib.request.Request(self.base + SERVICE + method, data=raw, headers=headers)
-        # No redirect following: never send a local CSRF token to another host.
-        with self.opener.open(request, timeout=self.timeout) as response:
-            if response.geturl() != self.base + SERVICE + method:
-                raise ValueError("Unexpected native API destination")
-            if streaming:
-                header = read_exact(response, 5)
-                flags, length = struct.unpack(">BI", header)
-                if flags or length > MAX_RESPONSE:
-                    raise ValueError("Unexpected streaming envelope")
-                return json.loads(read_exact(response, length))
-            body = response.read(MAX_RESPONSE + 1)
-            if len(body) > MAX_RESPONSE:
-                raise ValueError("Native response too large")
-            return json.loads(body)
+        reason = "state_protocol" if method in MONITOR_METHODS else "recovery_protocol"
+        try:
+            # Keep the local authentication token on the original loopback endpoint.
+            with self.opener.open(request, timeout=self.timeout) as response:
+                if response.geturl() != self.base + SERVICE + method:
+                    raise ValueError("Unexpected native API destination")
+                if streaming:
+                    flags, length = struct.unpack(">BI", read_exact(response, 5))
+                    if flags or length > MAX_RESPONSE:
+                        raise ValueError("Unexpected streaming envelope")
+                    body = read_exact(response, length)
+                else:
+                    body = response.read(MAX_RESPONSE + 1)
+                    if len(body) > MAX_RESPONSE:
+                        raise ValueError("Native response too large")
+                result = json.loads(body)
+                if not isinstance(result, dict) or {"code", "message"} <= result.keys():
+                    raise ValueError("Unexpected native response")
+                return result
+        except HTTPError as exc:
+            if exc.code in (404, 405, 415, 501):
+                raise NativeProtocolError(reason, f"Native method unavailable: {method}") from exc
+            raise
+        except (ValueError, struct.error) as exc:
+            raise NativeProtocolError(reason, f"Invalid response from {method}") from exc
+
+    def conversation_metadata(self, conversation: str) -> dict:
+        try:
+            return self.request("GetConversationMetadata", {"conversationId": conversation})
+        except NativeProtocolError:
+            # Pagination metadata is an optimization. The state stream verifies conversation identity.
+            return {}
 
     def state_update(self, conversation: str, window: int = 12) -> dict:
-        meta = self.request("GetConversationMetadata", {"conversationId": conversation})
-        count = int(meta.get("numSteps", 0))
+        meta = self.conversation_metadata(conversation)
+        try:
+            count = max(0, int(meta.get("numSteps", 0)))
+        except (TypeError, ValueError, OverflowError):
+            count = 0
         result = self.request("StreamAgentStateUpdates", {
             "conversationId": conversation,
             "initialStepsPageBounds": {"startIndex": max(0, count - window)},
@@ -98,9 +117,24 @@ class NativeClient:
             "initialExecutorMetadatasPageBounds": {"startIndex": 2147483647},
             "disableRehydration": True,
         }, streaming=True)
-        update = result.get("update", {})
-        if update.get("conversationId") != conversation:
-            raise ValueError("Native conversation mismatch")
+        update = result.get("update")
+        if not isinstance(update, dict) or update.get("conversationId") != conversation:
+            raise NativeProtocolError("state_protocol", "Native conversation mismatch")
+        status = update.get("status")
+        if not isinstance(status, str) or not status.startswith("CASCADE_RUN_STATUS_"):
+            raise NativeProtocolError("state_protocol", "Missing or unknown conversation status")
+        trajectory = update.get("mainTrajectoryUpdate", {})
+        if not isinstance(trajectory, dict):
+            raise NativeProtocolError("state_protocol", "Invalid trajectory update")
+        patch = trajectory.get("stepsUpdate", {})
+        if not isinstance(patch, dict) or (count and "stepsUpdate" not in trajectory):
+            raise NativeProtocolError("state_protocol", "Missing or invalid steps update")
+        steps, indices = patch.get("steps", []), patch.get("indices", [])
+        if (not isinstance(steps, list) or not isinstance(indices, list) or len(steps) != len(indices)
+                or any(not isinstance(step, dict) or not isinstance(step.get("type", ""), str)
+                       or not isinstance(step.get("status", ""), str) for step in steps)
+                or any(type(index) is not int or index < 0 for index in indices)):
+            raise NativeProtocolError("state_protocol", "Invalid trajectory steps")
         return update
 
     def snapshot(self, conversation: str) -> dict:
@@ -111,34 +145,34 @@ class NativeClient:
             "cascadeId": conversation, "killBackgroundTasks": False, "notifyParent": False,
         })
 
-    def executor_count(self, conversation: str) -> int:
+    def executor_records(self, conversation: str, offset: int) -> list:
         result = self.request("GetCascadeTrajectoryExecutorMetadatas", {
-            "cascadeId": conversation, "executorMetadataOffset": 0,
+            "cascadeId": conversation, "executorMetadataOffset": offset,
         })
-        records = result.get("executorMetadata", [])
-        if not isinstance(records, list):
-            raise ValueError("Invalid executor history")
-        return len(records)
+        records = result.get("executorMetadata", [] if not result else None)
+        if not isinstance(records, list) or any(not isinstance(record, dict) for record in records):
+            raise NativeProtocolError("recovery_protocol", "Invalid executor history")
+        return records
+
+    def executor_count(self, conversation: str) -> int:
+        return len(self.executor_records(conversation, 0))
 
     def frozen_config(self, conversation: str, previous_count: int) -> dict:
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
-            result = self.request("GetCascadeTrajectoryExecutorMetadatas", {
-                "cascadeId": conversation, "executorMetadataOffset": previous_count,
-            })
-            records = result.get("executorMetadata", [])
-            if not isinstance(records, list):
-                raise ValueError("Invalid executor configuration")
+            records = self.executor_records(conversation, previous_count)
             if records:
                 last = records[-1]
                 if last.get("terminationReason") != "EXECUTOR_TERMINATION_REASON_USER_CANCELED":
-                    raise ValueError("Executor did not stop as requested")
+                    raise NativeProtocolError("recovery_protocol", "Executor did not stop as requested")
                 config = last.get("cascadeConfig")
-                if not isinstance(config, dict) or not config:
-                    raise ValueError("Missing frozen executor configuration")
+                planner = config.get("plannerConfig") if isinstance(config, dict) else None
+                if (not isinstance(planner, dict) or not isinstance(config.get("executorConfig"), dict)
+                        or not any(planner.get(key) for key in ("planModel", "requestedModel", "modelName"))):
+                    raise NativeProtocolError("recovery_protocol", "Missing frozen executor configuration")
                 return copy.deepcopy(config)
             time.sleep(.1)
-        raise ValueError("No durable canceled-executor configuration")
+        raise NativeProtocolError("recovery_protocol", "No durable canceled-executor configuration")
 
     def continue_silently(self, conversation: str, config: dict) -> None:
         # Same empty-input protocol as the App's native Continue action.
@@ -164,17 +198,19 @@ def summarize(update: dict) -> dict:
     patch = trajectory.get("stepsUpdate", {})
     steps = patch.get("steps", [])
     indices = patch.get("indices", [])
-    blocked = bool(update.get("activeHook") or update.get("backgroundTasks") or
+    blocked = bool(not steps or update.get("activeHook") or update.get("backgroundTasks") or
                    update.get("pendingAgentMessages"))
     users = []
     for index, step in zip(indices, steps):
         kind = step.get("type", "")
         if kind == "CORTEX_STEP_TYPE_USER_INPUT":
             users.append(index)
-        if step.get("status") not in TERMINAL_STEP and kind != "CORTEX_STEP_TYPE_PLANNER_RESPONSE":
+        status = step.get("status")
+        model_wait = kind == "CORTEX_STEP_TYPE_PLANNER_RESPONSE" and status in ACTIVE_STEP
+        if not model_wait and status not in TERMINAL_STEP:
             blocked = True
         task = step.get("taskDetails", {})
-        if task.get("status") in ("TASK_STATUS_RUNNING", "TASK_STATUS_PENDING"):
+        if not isinstance(task, dict) or task.get("status") in ("TASK_STATUS_RUNNING", "TASK_STATUS_PENDING"):
             blocked = True
     # Hash actual model/tool changes, not wall clocks or network heartbeats.
     progress = hashlib.sha256(json.dumps({
@@ -183,8 +219,7 @@ def summarize(update: dict) -> dict:
         "context": update.get("contextWindowUsage", {}),
     }, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     return {"status": update.get("status"), "blocked": blocked, "progress": progress,
-            "lastUserIndex": max(users, default=-1), "steps": int(patch.get("totalLength", 0)),
-            "executorCount": int(trajectory.get("executorMetadatasUpdate", {}).get("totalLength", 0)),
+            "lastUserIndex": max(users, default=-1), "steps": patch.get("totalLength", 0),
             "trajectoryId": update.get("trajectoryId")}
 
 
@@ -195,20 +230,22 @@ def discover(conversation: str, timeout: float = 5) -> NativeClient:
         gemini_dir = Path.home() / ".gemini"
     directory = gemini_dir / "antigravity" / "daemon"
     paths = sorted(directory.glob("hub_*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
-    unsupported_host = None
+    incompatible = None
     for path in paths:
         try:
             client = NativeClient(json.loads(path.read_text()), timeout)
-            client.request("GetConversationMetadata", {"conversationId": conversation})
+            meta = client.conversation_metadata(conversation)
+            if not isinstance(meta.get("metadata"), dict):
+                client.state_update(conversation)
             return client
-        except UnsupportedHostVersion as exc:
-            if unsupported_host is None:
-                unsupported_host = exc
-        except (OSError, ValueError, KeyError, TypeError):
+        except NativeProtocolError as exc:
+            if incompatible is None:
+                incompatible = exc
+        except READ_ERRORS:
             continue
-    if unsupported_host is not None:
-        raise unsupported_host
-    raise ValueError("No compatible local App server")
+    if incompatible is not None:
+        raise incompatible
+    raise ConnectionError("No reachable local App server for this conversation")
 
 
 def control_paths(data: Path, conversation: str) -> tuple[Path, Path]:
@@ -295,48 +332,53 @@ def recover(client, conversation: str, before: dict, data: Path, control: dict,
         return False
     if int(control.get("attempts", 0)) >= settings["maxRetries"]:
         return False
+    # Test the read-only history endpoint before reserving an attempt or canceling.
+    previous_executors = client.executor_count(conversation)
     session_store.begin(data, conversation, control["turn"])
     reservation = session_store.reserve(data, conversation, control["turn"], settings,
                                         "watchdog", "no_progress")
     if reservation is None:
         return False
-    attempts, delay = reservation["attempt"] - 1, reservation["delay"]
+    attempt, delay = reservation["attempt"], reservation["delay"]
     def mark(old):
         if old.get("nonce") == nonce:
-            old.update(recovering=True, recoveryStartedAt=time.time(), attempts=attempts + 1)
+            old.update(recovering=True, recoveryStartedAt=time.time(), attempts=attempt)
         return old
     update_control(data, conversation, mark)
-    previous_executors = client.executor_count(conversation)
-    # One final generation check after fetching the cancellation receipt cursor.
-    if read_control(path).get("nonce") != nonce:
-        return False
-    client.cancel(conversation)
-    event(data, conversation, "model_wait_cancelled", attempt=attempts + 1, delaySeconds=delay)
-    config = client.frozen_config(conversation, previous_executors)
-    session_store.record(data, conversation, "waiting", nextRetryAt=time.time()+delay)
-    # Inspect changes and manual pause throughout the short backoff.
-    remaining = delay
-    while remaining > 0:
-        if (not enabled(retry.load_settings(), data) or read_control(path).get("nonce") != nonce
+    continued = False
+    try:
+        if read_control(path).get("nonce") != nonce or session_store.is_paused(data, conversation):
+            return False
+        client.cancel(conversation)
+        event(data, conversation, "model_wait_cancelled", attempt=attempt, delaySeconds=delay)
+        config = client.frozen_config(conversation, previous_executors)
+        session_store.record(data, conversation, "waiting", nextRetryAt=time.time()+delay)
+        # Inspect changes and manual pause throughout the short backoff.
+        remaining = delay
+        while remaining > 0:
+            if (not enabled(retry.load_settings(), data) or read_control(path).get("nonce") != nonce
+                    or session_store.is_paused(data, conversation)):
+                return False
+            interval = min(.25, remaining)
+            sleep(interval)
+            remaining -= interval
+        after = client.snapshot(conversation)
+        if after["status"] != IDLE or after["lastUserIndex"] > before["lastUserIndex"]:
+            return False
+        if (read_control(path).get("nonce") != nonce or not enabled(retry.load_settings(), data)
                 or session_store.is_paused(data, conversation)):
             return False
-        interval = min(.25, remaining)
-        sleep(interval)
-        remaining -= interval
-    after = client.snapshot(conversation)
-    if after["status"] == RUNNING or after["lastUserIndex"] > before["lastUserIndex"]:
-        return False
-    if (read_control(path).get("nonce") != nonce or not enabled(retry.load_settings(), data)
-            or session_store.is_paused(data, conversation)):
-        return False
-    client.continue_silently(conversation, config)
-    def unmark(old):
-        if old.get("nonce") == nonce:
-            old.update(recovering=False, armedAt=time.time())
-        return old
-    update_control(data, conversation, unmark)
-    event(data, conversation, "continued_without_message", attempt=attempts + 1,
-          delaySeconds=delay)
+        client.continue_silently(conversation, config)
+        continued = True
+    finally:
+        def unmark(old):
+            if old.get("nonce") == nonce:
+                old["recovering"] = False
+                if continued:
+                    old["armedAt"] = time.time()
+            return old
+        update_control(data, conversation, unmark)
+    event(data, conversation, "continued_without_message", attempt=attempt, delaySeconds=delay)
     session_store.record(data, conversation, "resuming", history=True, nextRetryAt=None)
     return True
 
@@ -346,24 +388,21 @@ def watch(conversation: str, data: Path) -> None:
     lock = path.with_suffix(".worker.lock")
     fd = os.open(lock, os.O_CREAT | os.O_RDWR, 0o600)
     client = None
+    version = None
     try:
         try:
             lock_fd(fd, blocking=False)
         except BlockingIOError:
             return
-        settings = retry.load_settings()
-        client = discover(conversation, settings["nativeApiTimeoutSeconds"])
         nonce = ""
         signature = ""
         progressed = time.monotonic()
         idle_seen = 0
-        event(data, conversation, "watching", nativeVersion=client.version)
+        read_failures = 0
         while True:
             settings = retry.load_settings()
             control = read_control(path)
             if not enabled(settings, data) or not control.get("armed"):
-                return
-            if not process_alive(client.pid):
                 return
             if session_store.is_paused(data, conversation):
                 session_store.record(data, conversation, "paused", nextRetryAt=None)
@@ -372,12 +411,30 @@ def watch(conversation: str, data: Path) -> None:
                 nonce = control["nonce"]
                 signature = ""
                 progressed = time.monotonic()
-            snapshot = client.snapshot(conversation)
+            try:
+                if client is None or not process_alive(client.pid):
+                    client = discover(conversation, settings["nativeApiTimeoutSeconds"])
+                    version = client.version
+                    event(data, conversation, "watching", nativeVersion=version)
+                snapshot = client.snapshot(conversation)
+            except READ_ERRORS:
+                read_failures += 1
+                if read_failures >= 3:
+                    raise
+                # Reconnect only while reading. Never repeat a cancel or continue RPC on error.
+                client = None
+                signature = ""
+                idle_seen = 0
+                progressed = time.monotonic()
+                time.sleep(settings["pollIntervalSeconds"])
+                continue
+            read_failures = 0
             if snapshot["status"] != RUNNING:
                 # Arm runs just before the model call; allow startup to settle.
                 idle_seen += 1
                 if idle_seen >= 3:
-                    session_store.record(data, conversation, "idle", nextRetryAt=None)
+                    session_store.record(data, conversation, "idle", nextRetryAt=None,
+                                         nativeVersion=version, nativeFailure=None)
                     return
                 time.sleep(settings["pollIntervalSeconds"])
                 continue
@@ -405,10 +462,8 @@ def watch(conversation: str, data: Path) -> None:
                     # A changed stream or a user action superseded recovery.
                     return
             time.sleep(settings["pollIntervalSeconds"])
-    except (OSError, ValueError, KeyError, TypeError, struct.error) as exc:
-        unsupported = isinstance(exc, UnsupportedHostVersion)
-        version = exc.version if unsupported else client.version if client else None
-        reason = "unsupported_version" if unsupported else "connection_or_protocol"
+    except READ_ERRORS as exc:
+        reason = exc.reason if isinstance(exc, NativeProtocolError) else "connection_or_protocol"
         event(data, conversation, "native_watch_unavailable", reason=reason, nativeVersion=version)
         session_store.record(data, conversation, "unavailable", nextRetryAt=None,
                              nativeFailure=reason, nativeVersion=version)
