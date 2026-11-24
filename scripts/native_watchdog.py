@@ -104,7 +104,7 @@ class NativeClient:
             # Pagination metadata is an optimization. The state stream verifies conversation identity.
             return {}
 
-    def state_update(self, conversation: str, window: int = 12) -> dict:
+    def state_update(self, conversation: str, window: int = 12, *, generator_start: int = 2147483647) -> dict:
         meta = self.conversation_metadata(conversation)
         try:
             count = max(0, int(meta.get("numSteps", 0)))
@@ -113,7 +113,7 @@ class NativeClient:
         result = self.request("StreamAgentStateUpdates", {
             "conversationId": conversation,
             "initialStepsPageBounds": {"startIndex": max(0, count - window)},
-            "initialGeneratorMetadatasPageBounds": {"startIndex": 2147483647},
+            "initialGeneratorMetadatasPageBounds": {"startIndex": generator_start},
             "initialExecutorMetadatasPageBounds": {"startIndex": 2147483647},
             "disableRehydration": True,
         }, streaming=True)

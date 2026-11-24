@@ -3,7 +3,6 @@ from __future__ import annotations
 import hmac
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
-import mimetypes
 import os
 import sys
 import threading
@@ -13,6 +12,7 @@ from urllib.parse import parse_qs, urlsplit
 import native_watchdog as native
 from platform_utils import file_lock, spawn_background
 import retry
+import runtime_monitor
 import session_store
 
 SIDECAR_ID = "ant-extend/pane"
@@ -217,7 +217,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send(403, {"error": "请在 Antigravity 侧栏重新打开 ant-extend。"})
                 return
             try:
-                cid = parse_qs(parts.query).get("conversationId", [""])[0]
+                query = parse_qs(parts.query)
+                cid = query.get("conversationId", [""])[0]
                 if len(cid) > CID_LIMIT:
                     raise ValueError("Invalid conversation")
                 if parts.path == "/api/state":
@@ -226,6 +227,8 @@ class Handler(BaseHTTPRequestHandler):
                     if not cid:
                         raise ValueError("Invalid conversation")
                     result = app.detail(cid)
+                elif parts.path == "/api/monitor":
+                    result = runtime_monitor.read(cid, query.get("request") == ["1"])
                 else:
                     self.send(404, {"error": "Not found"})
                     return
@@ -233,13 +236,14 @@ class Handler(BaseHTTPRequestHandler):
             except (OSError, ValueError, KeyError, TypeError):
                 self.send(400, {"error": "暂时无法读取，请稍后刷新。"})
             return
-        files = {"/": "index.html", "/app.js": "app.js", "/style.css": "style.css"}
+        files = {"/": "index.html", "/app.js": "app.js", "/style.css": "style.css",
+                 "/monitor.js": "monitor.js", "/monitor.css": "monitor.css"}
         name = files.get(parts.path)
         if not name:
             self.send(404, {"error": "Not found"})
             return
         path = retry.ROOT / "web" / name
-        content_type = "text/javascript" if name.endswith(".js") else mimetypes.guess_type(name)[0]
+        content_type = {".js": "text/javascript", ".css": "text/css", ".html": "text/html"}[path.suffix]
         self.send(200, path.read_bytes(), f"{content_type}; charset=utf-8")
 
     def do_POST(self):
