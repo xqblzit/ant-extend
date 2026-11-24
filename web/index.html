@@ -5,105 +5,280 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ant-extend</title>
   <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/monitor.css">
   <script src="/app.js" defer></script>
+  <script src="/monitor.js" defer></script>
 </head>
 <body>
   <main>
-    <div id="view-tabs" class="view-tabs" role="tablist" aria-label="ant-extend 视图">
-      <button id="session-tab" type="button" role="tab" aria-selected="true" aria-controls="session-view">会话</button>
-      <button id="settings-tab" type="button" role="tab" aria-selected="false" aria-controls="preferences" tabindex="-1" disabled>设置</button>
-    </div>
+    <nav class="toolbar" aria-label="ant-extend">
+      <div id="view-tabs" class="view-tabs" role="tablist" aria-label="ant-extend 视图">
+        <button id="session-tab" type="button" role="tab" aria-selected="true" aria-controls="session-view">会话</button>
+        <button id="monitor-tab" type="button" role="tab" aria-selected="false" aria-controls="monitor-view" tabindex="-1">运行监测</button>
+        <button id="settings-tab" type="button" role="tab" aria-selected="false" aria-controls="preferences" tabindex="-1" disabled>设置</button>
+      </div>
+    </nav>
 
     <section id="session-view" role="tabpanel" aria-labelledby="session-tab">
-      <section id="overview" aria-labelledby="overview-title" data-tone="idle">
-        <header class="overview-head">
-          <h1 id="overview-title">自动恢复</h1>
+      <section id="overview" class="session-hero" aria-labelledby="overview-title" data-tone="idle">
+        <header class="hero-top">
+          <div class="title-row">
+            <h1 id="overview-title">自动恢复</h1>
+            <span id="model" class="model-chip" hidden></span>
+          </div>
           <button id="session-pause" class="quiet-button" type="button" hidden>暂停本会话</button>
         </header>
         <div class="session-meta">
           <span class="session-status" role="status" id="status">正在连接</span>
-          <span id="model" hidden></span>
         </div>
-        <div class="retry-summary">
-          <div class="retry-count">
-            <span>本轮重试</span>
-            <strong><span id="attempts">—</span><span id="limit"></span></strong>
+        <div class="retry-summary measure-row">
+          <div class="measure">
+            <span class="measure-label">本轮重试</span>
+            <div class="measure-value"><strong id="attempts">—</strong><span id="limit"></span></div>
           </div>
           <p class="caption" id="detail">正在读取当前会话。</p>
         </div>
+        <div id="retry-pips" class="retry-pips" aria-hidden="true" hidden></div>
         <p id="carbon-hint" class="hint" hidden>Carbon 多次等待无进展。可在会话底部切换到 Hydrogen 后继续。</p>
       </section>
 
       <div class="disclosures">
-        <details id="history" hidden>
+        <details id="history" class="disclosure-row" hidden>
           <summary><span>恢复记录</span><span id="history-count" class="summary-note"></span></summary>
           <ol id="history-content" class="history-content"></ol>
         </details>
 
-        <details id="process" hidden>
-          <summary>思考与执行</summary>
+        <details id="process" class="disclosure-row" hidden>
+          <summary><span>思考与执行</span></summary>
           <div id="process-content" class="process-content"></div>
         </details>
       </div>
     </section>
 
+    <section id="monitor-view" role="tabpanel" aria-labelledby="monitor-tab" hidden>
+      <section id="monitor-window" class="studio-card monitor-hero" aria-labelledby="monitor-window-title" data-pressure="normal">
+        <header class="hero-top">
+          <div class="title-row">
+            <h1 id="monitor-window-title">上下文占用</h1>
+            <span id="monitor-health" class="health-tag" hidden></span>
+          </div>
+          <div id="monitor-status" class="monitor-status" data-phase="unknown">
+            <span class="monitor-beacon" aria-hidden="true"></span>
+            <strong id="monitor-phase" role="status">正在读取状态</strong>
+          </div>
+        </header>
+        <p id="monitor-tool" class="monitor-tool-tag" hidden></p>
+
+        <div class="hero-body">
+          <div class="ring-wrap">
+            <svg id="monitor-ring" class="monitor-ring" viewBox="0 0 104 104" data-available="false" aria-hidden="true">
+              <circle class="ring-track" cx="52" cy="52" r="41"></circle>
+              <g id="monitor-ring-segments" transform="rotate(-90 52 52)"></g>
+              <circle id="monitor-ring-req" class="ring-req-dot is-hidden" cx="52" cy="11" r="2.8"></circle>
+              <g id="monitor-ring-center-default" class="ring-center">
+                <text id="monitor-percent" class="ring-pct" x="52" y="51" text-anchor="middle" dominant-baseline="central">—</text>
+                <text id="monitor-ring-sub" class="ring-sub" x="52" y="69" text-anchor="middle">已占用</text>
+              </g>
+              <g id="monitor-ring-center-hover" class="ring-center is-hidden">
+                <text id="monitor-hover-pct" class="ring-pct" x="52" y="51" text-anchor="middle" dominant-baseline="central"></text>
+                <text id="monitor-hover-label" class="ring-sub ring-hover-label" x="52" y="69" text-anchor="middle"></text>
+              </g>
+            </svg>
+          </div>
+
+          <div class="hero-stats">
+            <div class="hero-ratio-line" aria-label="上下文已用与上限">
+              <strong id="monitor-used" class="hero-used">—</strong>
+              <span class="hero-slash">/</span>
+              <span id="monitor-limit" class="hero-limit">—</span>
+            </div>
+            <div class="hero-free-line">
+              <span>剩余可用</span>
+              <strong id="monitor-free" class="hero-free">—</strong>
+            </div>
+            <div id="monitor-delta" class="monitor-delta" hidden></div>
+            <div id="monitor-inspect" class="hero-inspect" hidden>
+              <span id="monitor-inspect-dot" class="monitor-swatch" aria-hidden="true"></span>
+              <span id="monitor-inspect-text"></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="hero-bar-wrap">
+          <div id="monitor-bar" class="storage-bar" data-available="false" role="img" aria-label="上下文分布条"></div>
+        </div>
+        <p id="monitor-window-note" class="monitor-note" hidden></p>
+      </section>
+
+      <div class="chart-bento">
+        <section class="studio-card bento-card" aria-label="窗口占用走势">
+          <div class="bento-head">
+            <span>窗口走势</span>
+            <span id="monitor-spark-badge" class="bento-badge">—</span>
+          </div>
+          <svg id="monitor-spark" class="spark-svg" viewBox="0 0 156 56" preserveAspectRatio="none" aria-hidden="true">
+            <defs>
+              <linearGradient id="spark-grad" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" class="spark-grad-top"></stop>
+                <stop offset="100%" class="spark-grad-bottom"></stop>
+              </linearGradient>
+            </defs>
+            <line class="spark-threshold" x1="4" y1="12.6" x2="152" y2="12.6"></line>
+            <path id="monitor-spark-area" class="spark-area"></path>
+            <path id="monitor-spark-line" class="spark-line"></path>
+            <circle id="monitor-spark-halo" class="spark-halo is-hidden" cx="152" cy="50" r="5"></circle>
+            <circle id="monitor-spark-dot" class="spark-dot is-hidden" cx="152" cy="50" r="2.6"></circle>
+          </svg>
+          <div id="monitor-spark-foot" class="bento-foot">等待采样</div>
+        </section>
+
+        <section class="studio-card bento-card" aria-label="三层构成结构">
+          <div class="bento-head">
+            <span>构成结构</span>
+            <span id="monitor-split-badge" class="bento-badge">三层占比</span>
+          </div>
+          <div id="monitor-split" class="split-chart">
+            <div class="split-row">
+              <div class="split-label-row">
+                <span class="split-name"><span class="split-dot split-dot-chat" aria-hidden="true"></span>对话</span>
+                <strong id="split-chat-val" class="split-val">—</strong>
+              </div>
+              <div class="split-track"><span id="split-chat-bar" class="split-fill split-fill-chat"></span></div>
+            </div>
+            <div class="split-row">
+              <div class="split-label-row">
+                <span class="split-name"><span class="split-dot split-dot-base" aria-hidden="true"></span>底座</span>
+                <strong id="split-base-val" class="split-val">—</strong>
+              </div>
+              <div class="split-track"><span id="split-base-bar" class="split-fill split-fill-base"></span></div>
+            </div>
+            <div class="split-row">
+              <div class="split-label-row">
+                <span class="split-name"><span class="split-dot split-dot-free" aria-hidden="true"></span>剩余</span>
+                <strong id="split-free-val" class="split-val">—</strong>
+              </div>
+              <div class="split-track"><span id="split-free-bar" class="split-fill split-fill-free"></span></div>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <section class="monitor-groups" aria-labelledby="monitor-groups-title">
+        <div class="monitor-section-header">
+          <div class="section-title-group">
+            <h2 id="monitor-groups-title">占用来源</h2>
+            <span id="monitor-scope-summary" class="scope-summary" hidden></span>
+          </div>
+          <div class="section-controls">
+            <div class="monitor-scope" role="group" aria-label="查看占用来源">
+              <button id="monitor-current-mode" type="button" aria-pressed="true" aria-controls="monitor-current">当前</button>
+              <button id="monitor-request-mode" type="button" aria-pressed="false" aria-controls="monitor-request">最近请求</button>
+            </div>
+            <div class="view-switch" role="group" aria-label="视图切换">
+              <button id="monitor-view-list" type="button" aria-pressed="true" title="列表视图" aria-label="列表视图">
+                <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true">
+                  <path d="M3 4h10M3 8h10M3 12h7"/>
+                </svg>
+              </button>
+              <button id="monitor-view-map" type="button" aria-pressed="false" title="空间树图" aria-label="空间树图">
+                <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true">
+                  <rect x="2.2" y="2.2" width="6.2" height="11.6" rx="1.2"/>
+                  <rect x="10.2" y="2.2" width="3.6" height="5" rx="1"/>
+                  <rect x="10.2" y="8.8" width="3.6" height="5" rx="1"/>
+                </svg>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div id="monitor-current" data-shares="false">
+          <div id="monitor-current-list-wrap">
+            <ul id="monitor-groups" class="monitor-list"></ul>
+          </div>
+          <div id="monitor-current-map-wrap" hidden>
+            <div id="monitor-current-treemap" class="treemap-box"></div>
+            <div id="monitor-current-inspector" class="treemap-inspector" hidden></div>
+          </div>
+          <p id="monitor-groups-note" class="monitor-note">正在读取宿主数据。</p>
+        </div>
+
+        <div id="monitor-request" hidden>
+          <div id="monitor-request-content" class="monitor-request-content">
+            <p class="monitor-note">正在读取请求明细。</p>
+          </div>
+        </div>
+      </section>
+
+      <footer id="monitor-footer" class="monitor-footer" hidden>
+        <span>宿主实时采样</span>
+        <time id="monitor-time"></time>
+      </footer>
+    </section>
+
     <section id="preferences" role="tabpanel" aria-labelledby="settings-tab" hidden>
       <form id="settings-form">
-        <div class="config-group">
-          <h2>自动恢复</h2>
-          <div class="config-row">
-            <span id="global-status">全部会话自动恢复</span>
-            <button id="global-pause" class="quiet-button" type="button" disabled>暂停全部</button>
-          </div>
-          <label class="config-row">
-            <span>提前恢复</span>
-            <span class="switch">
-              <input id="early-recovery" type="checkbox" role="switch">
-              <span class="switch-track" aria-hidden="true"></span>
-            </span>
-          </label>
-        </div>
-
-        <div class="config-group">
-          <h2>重试策略</h2>
-          <label class="config-row">
-            <span>无进展检测</span>
-            <select id="preset">
-              <option value="default">默认 · 120 秒</option>
-              <option value="fast">灵敏 · 15 秒起</option>
-              <option value="balanced">均衡 · 30 秒起</option>
-              <option value="patient">稳健 · 60 秒起</option>
-              <option value="custom">自定义</option>
-            </select>
-          </label>
-          <div id="custom-detection" hidden>
-            <label class="config-row schedule-row">
-              <span>检测间隔（秒）</span>
-              <input id="idle-timeouts" type="text" placeholder="例如 20, 35, 50"
-                     aria-describedby="detection-note" required disabled>
+        <section class="config-section" aria-labelledby="recovery-settings">
+          <h2 id="recovery-settings">自动恢复</h2>
+          <div class="config-surface">
+            <div class="config-row">
+              <span id="global-status">全部会话自动恢复</span>
+              <button id="global-pause" class="quiet-button" type="button" disabled>暂停全部</button>
+            </div>
+            <label class="config-row">
+              <span>提前恢复</span>
+              <span class="switch">
+                <input id="early-recovery" type="checkbox" role="switch">
+                <span class="switch-track" aria-hidden="true"></span>
+              </span>
             </label>
-            <p id="detection-note" class="field-note">填一个值就固定使用，多个值用逗号隔开并递增。</p>
           </div>
-          <label class="config-row">
-            <span>每轮最多重试</span>
-            <input id="max-retries" type="number" step="1" min="0" max="20" required>
-          </label>
-          <label class="config-row schedule-row">
-            <span>递增等待（秒）</span>
-            <input id="delays" type="text" inputmode="decimal" placeholder="10, 20, 30, 60" required>
-          </label>
-        </div>
+        </section>
 
-        <div class="config-group">
-          <h2>侧栏显示</h2>
-          <label class="config-row">
-            <span>思考与执行</span>
-            <span class="switch">
-              <input id="progress-view" type="checkbox" role="switch">
-              <span class="switch-track" aria-hidden="true"></span>
-            </span>
-          </label>
-        </div>
+        <section class="config-section" aria-labelledby="retry-settings">
+          <h2 id="retry-settings">重试策略</h2>
+          <div class="config-surface">
+            <label class="config-row">
+              <span>无进展检测</span>
+              <select id="preset">
+                <option value="default">默认 · 120 秒</option>
+                <option value="fast">灵敏 · 15 秒起</option>
+                <option value="balanced">均衡 · 30 秒起</option>
+                <option value="patient">稳健 · 60 秒起</option>
+                <option value="custom">自定义</option>
+              </select>
+            </label>
+            <div id="custom-detection" hidden>
+              <label class="config-row schedule-row">
+                <span>检测间隔（秒）</span>
+                <input id="idle-timeouts" type="text" placeholder="例如 20, 35, 50"
+                       aria-describedby="detection-note" required disabled>
+              </label>
+              <p id="detection-note" class="field-note">填一个值就固定使用，多个值用逗号隔开并递增。</p>
+            </div>
+            <label class="config-row">
+              <span>每轮最多重试</span>
+              <input id="max-retries" type="number" step="1" min="0" max="20" required>
+            </label>
+            <label class="config-row schedule-row">
+              <span>递增等待（秒）</span>
+              <input id="delays" type="text" inputmode="decimal" placeholder="10, 20, 30, 60" required>
+            </label>
+          </div>
+        </section>
+
+        <section class="config-section" aria-labelledby="display-settings">
+          <h2 id="display-settings">侧栏显示</h2>
+          <div class="config-surface">
+            <label class="config-row">
+              <span>思考与执行</span>
+              <span class="switch">
+                <input id="progress-view" type="checkbox" role="switch">
+                <span class="switch-track" aria-hidden="true"></span>
+              </span>
+            </label>
+          </div>
+        </section>
+
         <div id="settings-actions" class="settings-actions" hidden>
           <button id="save" type="submit" disabled>保存设置</button>
         </div>

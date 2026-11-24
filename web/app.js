@@ -4,7 +4,7 @@ const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
 const conversationId = params.get('conversationId') || '';
 const token = params.get('token');
-const tabs = [$('session-tab'), $('settings-tab')];
+const tabs = [$('session-tab'), $('monitor-tab'), $('settings-tab')];
 const presets = {
   default: [120],
   fast: [15, 25, 40, 60],
@@ -65,15 +65,17 @@ function modelLabel(model) {
   return 'Gemini 4 ' + family + ' ' + effort;
 }
 
-async function request(path, action) {
+async function request(path, action, query) {
   const headers = { 'X-Sidecar-Token': token };
   const options = { headers, cache: 'no-store', signal: AbortSignal.timeout(10000) };
   if (action) {
     headers['Content-Type'] = 'application/json';
     options.method = 'POST';
     options.body = JSON.stringify(action);
-  } else if (conversationId) {
-    path += '?' + new URLSearchParams({ conversationId }).toString();
+  } else {
+    const search = new URLSearchParams(query);
+    if (conversationId) search.set('conversationId', conversationId);
+    if (search.toString()) path += '?' + search.toString();
   }
   const response = await fetch(path, options);
   if (response.status === 403 || response.status === 401) {
@@ -104,6 +106,18 @@ function showState() {
 
   setText('attempts', String(attempts));
   setText('limit', ' / ' + settings.maxRetries);
+  const pips = $('retry-pips');
+  if (pips) {
+    const maxPips = settings.maxRetries;
+    pips.hidden = !(maxPips > 0 && maxPips <= 12);
+    if (!pips.hidden) {
+      pips.replaceChildren(...Array.from({ length: maxPips }, (_, i) => {
+        const pip = textElement('span', '', 'retry-pip');
+        pip.dataset.filled = String(i < attempts);
+        return pip;
+      }));
+    }
+  }
   $('model').hidden = !row?.model;
   setText('model', modelLabel(row?.model));
 
@@ -264,13 +278,16 @@ function selectTab(selected) {
     $(tab.getAttribute('aria-controls')).hidden = !active;
   }
   if (selected === tabs[0]) void refresh();
+  if (selected.id === 'monitor-tab') void refreshMonitor();
 }
 
 for (const tab of tabs) tab.addEventListener('click', () => selectTab(tab));
 $('view-tabs').addEventListener('keydown', (event) => {
-  if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
-  const tab = tabs.find((candidate) => candidate !== event.target && !candidate.disabled);
-  if (!tab) return;
+  const available = tabs.filter((tab) => !tab.disabled);
+  const index = available.indexOf(event.target);
+  const direction = { ArrowLeft: -1, ArrowRight: 1 }[event.key];
+  if (index === -1 || !direction) return;
+  const tab = available[(index + direction + available.length) % available.length];
   event.preventDefault();
   selectTab(tab);
   tab.focus();
@@ -323,5 +340,5 @@ if (token) {
 } else {
   setText('status', '在 Antigravity 内打开');
   setText('detail', '从会话右侧的 Extensions 中选择 ant-extend。');
-  $('view-tabs').hidden = true;
+  $('view-tabs').parentElement.hidden = true;
 }

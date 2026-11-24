@@ -2,8 +2,8 @@
   "$schema": "https://antigravity.google/schemas/v1/plugin.json",
   "name": "ant-extend",
   "displayName": "ant-extend 扩展",
-  "version": "2.2.4",
-  "description": "静默自动重试，在 Antigravity 侧栏查看进度。",
+  "version": "2.4.4",
+  "description": "静默自动重试，在原生侧栏查看运行状态和上下文占用。",
   "author": "Local Tools",
   "logo": "assets/logo.svg"
 }

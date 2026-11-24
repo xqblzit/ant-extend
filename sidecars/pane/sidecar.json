@@ -3,7 +3,7 @@
   "args": ["--sidecar"],
   "restart_policy": "on-failure",
   "display_name": "ant-extend",
-  "description": "会话重试状态、记录与设置。",
+  "description": "会话恢复、运行状态与上下文占用。",
   "has_web_ui": true,
   "agent_permissions": {"allows_user_interactions": false},
   "ui_config": {
